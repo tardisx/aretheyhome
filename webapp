@@ -1,0 +1,89 @@
+#!/usr/bin/env perl
+use Mojolicious::Lite;
+
+use EV;
+use AnyEvent;
+use AnyEvent::MQTT;
+
+my $ws = {};
+
+# handle MQTT events
+my $mqtt = AnyEvent::MQTT->new(); # localhost
+my $cv = $mqtt->subscribe(
+  topic => 'espp',
+  callback => sub {
+    my ($topic, $message) = @_;
+    my $since = scalar localtime();
+    my $office;
+    $office = 'YES' if ($message eq 'present');
+    $office = 'NO'  if ($message eq 'absent');
+
+    $_->send({ json => { office => $office, since => $since }})
+      foreach values %$ws;
+  });
+my $qos = $cv->recv;
+
+
+get '/' => sub {
+  my $c = shift;
+  $c->render(template => 'index');
+};
+
+websocket '/ws' => sub {
+  my $c = shift;
+
+  # Opened
+  $c->app->log->debug('WebSocket opened');
+
+  # track connection
+  my $key = sprintf "%s", $c->tx;
+  $ws->{$key} = $c->tx;
+
+  # Increase inactivity timeout for connection a bit
+  $c->inactivity_timeout(3600);
+
+  # Closed
+  $c->on(finish => sub {
+    my ($c, $code, $reason) = @_;
+    $c->app->log->debug("WebSocket closed with status $code");
+    delete $ws->{$key}; # stop tracking
+  });
+};
+
+
+app->start;
+__DATA__
+
+@@ index.html.ep
+% layout 'default';
+% title 'Welcome';
+
+<p>Is Heidi in her office: <span id="office"></span> since <span id="since"></span></p>
+
+<script>
+$( document ).ready(function() {
+  $('#office').text('NO');
+  $('#since').text('???');
+  var ws = new WebSocket('<%= url_for('ws')->port(3000)->to_abs %>');
+
+  // Incoming messages
+  ws.onmessage = function (event) {
+    var data = JSON.parse(event.data);
+    console.log(data);
+    $('#office').text(data.office);
+    $('#since').text(data.since);
+  };
+});
+</script>
+
+@@ layouts/default.html.ep
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= title %></title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+  </head>
+  <body>
+<%= content %>
+  </body>
+</html>
